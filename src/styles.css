@@ -1,0 +1,365 @@
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #0a0a12;
+  color: #fff;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+/* ── Status screens (connecting / no player / settings) ───────── */
+.status-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 16px;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.status-screen svg {
+  opacity: 0.35;
+}
+
+.status-screen h2 {
+  font-size: 20px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.status-screen p {
+  font-size: 14px;
+  text-align: center;
+  max-width: 280px;
+  line-height: 1.5;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+/* ── Settings input screen ────────────────────────────────────── */
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 340px;
+}
+
+.settings-form label {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.6);
+  margin-bottom: 4px;
+  display: block;
+}
+
+.settings-form input {
+  width: 100%;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  color: #fff;
+  font-size: 15px;
+  font-family: inherit;
+  outline: none;
+  cursor: text;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.settings-form input:focus {
+  border-color: rgba(100, 180, 255, 0.5);
+}
+
+.btn-primary {
+  padding: 10px 20px;
+  background: #2196f3;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.btn-primary:hover {
+  background: #42a5f5;
+}
+
+/* ── Now playing layout ───────────────────────────────────────── */
+.now-playing {
+  display: flex;
+  height: 100%;
+  background: #0a0a12;
+}
+
+/* Blurred art background */
+.art-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+}
+
+.art-bg img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  filter: blur(40px) brightness(0.22) saturate(1.6);
+  transform: scale(1.15);
+}
+
+/* Left panel: album art */
+.art-panel {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 240px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px 16px 28px 28px;
+}
+
+.art-frame {
+  width: 200px;
+  height: 200px;
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  flex-shrink: 0;
+}
+
+.art-frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.art-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.15);
+}
+
+/* Right panel: info + controls */
+.info-panel {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 24px 28px 20px 16px;
+  min-width: 0;
+}
+
+.track-info {
+  margin-bottom: 18px;
+}
+
+.track-title {
+  font-size: 22px;
+  font-weight: 700;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
+  margin-bottom: 6px;
+}
+
+.track-artist {
+  font-size: 15px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.75);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 3px;
+}
+
+.track-album {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.45);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Progress bar */
+.progress-area {
+  margin-bottom: 18px;
+}
+
+.progress-times {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+  margin-bottom: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+.progress-track {
+  height: 4px;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 2px;
+  position: relative;
+  cursor: pointer;
+  padding: 8px 0;
+  margin: -8px 0;
+}
+
+.progress-track::after {
+  content: "";
+  position: absolute;
+  inset: 8px 0;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 2px;
+}
+
+.progress-fill {
+  position: absolute;
+  top: 8px;
+  left: 0;
+  height: 4px;
+  background: #2196f3;
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 1;
+  max-width: 100%;
+}
+
+.progress-thumb {
+  position: absolute;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  background: #fff;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  z-index: 2;
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.5);
+}
+
+/* Controls */
+.controls-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ctrl-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.85);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.ctrl-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.ctrl-btn:active {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.ctrl-btn.play-pause {
+  width: 56px;
+  height: 56px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.ctrl-btn.play-pause:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.volume-section {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.volume-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.55);
+  cursor: pointer;
+  border-radius: 50%;
+  transition: color 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.volume-btn:hover {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.volume-slider {
+  width: 96px;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 2px;
+  position: relative;
+  cursor: pointer;
+  padding: 8px 0;
+  margin: -8px 0;
+}
+
+.volume-slider::after {
+  content: "";
+  position: absolute;
+  inset: 8px 0;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 2px;
+}
+
+.volume-fill {
+  position: absolute;
+  top: 8px;
+  left: 0;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.55);
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 1;
+  max-width: 100%;
+}
