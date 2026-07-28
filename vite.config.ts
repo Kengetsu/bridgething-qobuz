@@ -12,7 +12,7 @@ export default defineConfig(({ mode }) => ({
   },
   build: {
     target: mode === "carthing" ? "chrome69" : "es2022",
-    sourcemap: true,
+    sourcemap: mode !== "bridgething",
     outDir: "dist",
   },
 }));

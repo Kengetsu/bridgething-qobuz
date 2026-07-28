@@ -24,18 +24,74 @@ function defaultState(): BridgeFullState {
   return { playerName: null, track: null, playback: defaultPlayback() };
 }
 
-export function getWsUrl(): string {
-  // When served from the bridge server, derive WebSocket URL from page origin
+// True when the app is loaded as a BridgeThing package (file:// or explicit flag),
+// not when served by the bridge server itself.
+export function isBridgeThingRuntime(): boolean {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("transport") === "bridgething") return true;
+  // Bridge server runs on port 4173 — exclude that case
+  if (window.location.port === "4173" || window.location.port === "5173") return false;
+  return (
+    window.location.protocol === "file:" ||
+    window.location.hostname === "127.0.0.1" ||
+    window.location.hostname === "localhost"
+  );
+}
+
+// Read the bridge URL from BridgeThing's config store (on-device deployments).
+export async function getWsUrlFromBridgeThing(): Promise<string | null> {
+  try {
+    const { BridgethingClient } = await import("@bridgething/client");
+    const client = new BridgethingClient();
+    try {
+      const result = await client.config.list({ timeoutMs: 3000 });
+      if (!result.ok) return null;
+      const entry = result.response.entries.find((e) => e.key === "bridgeUrl");
+      return entry?.value?.trim() || null;
+    } finally {
+      client.close();
+    }
+  } catch {
+    return null;
+  }
+}
+
+// Read brightness settings from BridgeThing and apply to the display.
+export async function applyBridgeThingBrightness(): Promise<void> {
+  try {
+    const { BridgethingClient } = await import("@bridgething/client");
+    const client = new BridgethingClient();
+    try {
+      const [docResult] = await Promise.all([client.doc.list({ timeoutMs: 3000 })]);
+      if (!docResult.ok) return;
+      const docs = Object.fromEntries(docResult.response.entries.map((e) => [e.key, e.value]));
+      const mode = docs.brightnessMode === "manual" ? "manual" : "auto";
+      const level = Math.max(0.05, Math.min(1, Number(docs.brightnessLevel ?? "0.55")));
+      await client.hardware.displaySetMode({ mode });
+      if (mode === "manual") await client.hardware.displaySetLevel({ level });
+    } finally {
+      client.close();
+    }
+  } catch {
+    // Not fatal — brightness just stays at current level
+  }
+}
+
+// Synchronous URL resolution when served from the bridge server.
+export function getWsUrlFromOrigin(): string | null {
   if (window.location.host && window.location.protocol !== "file:") {
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     return `${proto}//${window.location.host}/ws`;
   }
-  // Device deployment: read from localStorage, fall back to a prompt
-  return localStorage.getItem(STORAGE_KEY) ?? "";
+  return null;
 }
 
 export function saveBridgeUrl(url: string): void {
   localStorage.setItem(STORAGE_KEY, url);
+}
+
+export function getSavedBridgeUrl(): string {
+  return localStorage.getItem(STORAGE_KEY) ?? "";
 }
 
 type Listener<T> = (value: T) => void;

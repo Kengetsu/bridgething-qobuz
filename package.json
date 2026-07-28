@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
-    "build:device": "tsc -b && vite build --mode carthing",
+    "build:bridgething": "tsc -b && vite build --mode bridgething && vite build -c vite.settings.config.ts",
+    "build:device": "tsc -b && vite build --mode carthing && node scripts/transpile-chrome69.mjs",
+    "package:bridgething": "node scripts/package-bridgething.mjs",
+    "release:bridgething": "npm run build:bridgething && npm run package:bridgething",
     "bridge": "bun server/index.mjs",
     "preview": "vite preview --host 0.0.0.0"
   },
@@ -21,7 +24,9 @@
   "devDependencies": {
     "@types/react": "latest",
     "@types/react-dom": "latest",
+    "esbuild": "latest",
     "typescript": "latest",
-    "vite": "latest"
+    "vite": "latest",
+    "vite-plugin-singlefile": "^2.3.3"
   }
 }

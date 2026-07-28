@@ -11,7 +11,15 @@ import {
   VolumeX,
   WifiOff,
 } from "lucide-react";
-import { BridgeClient, getWsUrl, saveBridgeUrl } from "./lib/bridge";
+import {
+  BridgeClient,
+  applyBridgeThingBrightness,
+  getSavedBridgeUrl,
+  getWsUrlFromBridgeThing,
+  getWsUrlFromOrigin,
+  isBridgeThingRuntime,
+  saveBridgeUrl,
+} from "./lib/bridge";
 import type { PlaybackState, TrackInfo } from "./types";
 
 function formatTime(secs: number): string {
@@ -75,11 +83,16 @@ export default function App() {
   const clientRef = useRef<BridgeClient | null>(null);
   const posRef = useRef({ position: 0, timestamp: 0, playing: false });
 
-  // Resolve bridge URL on mount
+  // Resolve bridge URL on mount — strategy depends on runtime context
   useEffect(() => {
-    const url = getWsUrl();
-    if (url) setWsUrl(url);
-    // else: show SettingsScreen
+    if (isBridgeThingRuntime()) {
+      // Running as a BridgeThing package: read URL from config store
+      applyBridgeThingBrightness();
+      getWsUrlFromBridgeThing().then((url) => setWsUrl(url ?? null));
+    } else {
+      // Running from bridge server: WebSocket is at the same host
+      setWsUrl(getWsUrlFromOrigin() ?? getSavedBridgeUrl() ?? null);
+    }
   }, []);
 
   // Create/recreate bridge client when URL changes
@@ -144,8 +157,17 @@ export default function App() {
     [send]
   );
 
-  // ── No URL configured: show setup ───────────────────────────
+  // ── No URL configured ───────────────────────────────────────
   if (!wsUrl) {
+    if (isBridgeThingRuntime()) {
+      return (
+        <div className="status-screen">
+          <WifiOff size={48} />
+          <h2>Not configured</h2>
+          <p>Open the BridgeThing companion app and set the Bridge URL in Qobuz settings.</p>
+        </div>
+      );
+    }
     return <SettingsScreen onSave={setWsUrl} />;
   }
 
