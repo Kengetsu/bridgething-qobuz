@@ -21,7 +21,25 @@ function parseBrightnessMode(v: string | undefined): Values["brightnessMode"] {
 
 function parseBrightnessLevel(v: string | undefined): number {
   const n = Number(v);
-  return Number.isFinite(n) ? Math.max(0.05, Math.min(1, n)) : defaults.brightnessLevel;
+  return Number.isFinite(n)
+    ? Math.max(0.05, Math.min(1, n))
+    : defaults.brightnessLevel;
+}
+
+/** Validate WebSocket URL format */
+function isValidWsUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:") {
+      return false;
+    }
+    if (!parsed.hostname) {
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function SettingsApp() {
@@ -29,28 +47,38 @@ function SettingsApp() {
   const [status, setStatus] = useState("Loading…");
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
+
     void (async () => {
       try {
         const [configEntries, docEntries] = await Promise.all([
           settings.config.list(),
           settings.doc.list(),
         ]);
-        const cfg = Object.fromEntries(configEntries.map((e) => [e.key, e.value]));
+        const cfg = Object.fromEntries(
+          configEntries.map((e) => [e.key, e.value]),
+        );
         const doc = Object.fromEntries(docEntries.map((e) => [e.key, e.value]));
-        if (!cancelled) {
+        if (!controller.signal.aborted) {
           setValues({
             bridgeUrl: cfg.bridgeUrl ?? "",
-            brightnessMode: parseBrightnessMode(doc.brightnessMode ?? cfg.brightnessMode),
-            brightnessLevel: parseBrightnessLevel(doc.brightnessLevel ?? cfg.brightnessLevel),
+            brightnessMode: parseBrightnessMode(
+              doc.brightnessMode ?? cfg.brightnessMode,
+            ),
+            brightnessLevel: parseBrightnessLevel(
+              doc.brightnessLevel ?? cfg.brightnessLevel,
+            ),
           });
           setStatus("");
         }
       } catch (err) {
-        if (!cancelled) setStatus(err instanceof Error ? err.message : String(err));
+        if (!controller.signal.aborted)
+          setStatus(err instanceof Error ? err.message : String(err));
       }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      controller.abort();
+    };
   }, []);
 
   const set = <K extends keyof Values>(key: K, value: Values[K]) =>
@@ -59,8 +87,12 @@ function SettingsApp() {
   const save = async (e: FormEvent) => {
     e.preventDefault();
     const url = values.bridgeUrl.trim();
-    if (!url.startsWith("ws://") && !url.startsWith("wss://")) {
-      setStatus("URL must start with ws:// or wss://");
+
+    // Validate URL format
+    if (!isValidWsUrl(url)) {
+      setStatus(
+        "Invalid WebSocket URL format. Must start with ws:// or wss://",
+      );
       return;
     }
     setStatus("Saving…");
@@ -70,7 +102,14 @@ function SettingsApp() {
       await settings.doc.set("brightnessLevel", String(values.brightnessLevel));
       setStatus("Saved");
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes("permission")) {
+        setStatus("Permission denied. Check BridgeThing app permissions.");
+      } else if (message.includes("timeout")) {
+        setStatus("Connection timeout. Try again.");
+      } else {
+        setStatus(message);
+      }
     }
   };
 
@@ -95,7 +134,12 @@ function SettingsApp() {
             Brightness mode
             <select
               value={values.brightnessMode}
-              onChange={(e) => set("brightnessMode", e.target.value as Values["brightnessMode"])}
+              onChange={(e) =>
+                set(
+                  "brightnessMode",
+                  e.target.value as Values["brightnessMode"],
+                )
+              }
             >
               <option value="auto">Auto</option>
               <option value="manual">Manual</option>
@@ -108,14 +152,18 @@ function SettingsApp() {
               min="5"
               max="100"
               value={Math.round(values.brightnessLevel * 100)}
-              onChange={(e) => set("brightnessLevel", Number(e.target.value) / 100)}
+              onChange={(e) =>
+                set("brightnessLevel", Number(e.target.value) / 100)
+              }
             />
           </label>
         </section>
 
         <div className="actions">
           <button type="submit">Save</button>
-          <button type="button" onClick={() => settings.done()}>Done</button>
+          <button type="button" onClick={() => settings.done()}>
+            Done
+          </button>
         </div>
       </form>
       {status && <p>{status}</p>}

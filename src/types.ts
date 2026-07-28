@@ -11,8 +11,8 @@ export interface TrackInfo {
 
 export interface PlaybackState {
   status: PlaybackStatus;
-  position: number;  // seconds
-  volume: number;    // 0–1
+  position: number; // seconds
+  volume: number; // 0–1
   shuffle: boolean;
   loop: LoopMode;
   timestamp: number; // Date.now() when position was sampled

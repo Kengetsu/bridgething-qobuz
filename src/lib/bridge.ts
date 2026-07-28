@@ -30,7 +30,8 @@ export function isBridgeThingRuntime(): boolean {
   const params = new URLSearchParams(window.location.search);
   if (params.get("transport") === "bridgething") return true;
   // Bridge server runs on port 4173 — exclude that case
-  if (window.location.port === "4173" || window.location.port === "5173") return false;
+  if (window.location.port === "4173" || window.location.port === "5173")
+    return false;
   return (
     window.location.protocol === "file:" ||
     window.location.hostname === "127.0.0.1" ||
@@ -62,11 +63,18 @@ export async function applyBridgeThingBrightness(): Promise<void> {
     const { BridgethingClient } = await import("@bridgething/client");
     const client = new BridgethingClient();
     try {
-      const [docResult] = await Promise.all([client.doc.list({ timeoutMs: 3000 })]);
+      const [docResult] = await Promise.all([
+        client.doc.list({ timeoutMs: 3000 }),
+      ]);
       if (!docResult.ok) return;
-      const docs = Object.fromEntries(docResult.response.entries.map((e) => [e.key, e.value]));
+      const docs = Object.fromEntries(
+        docResult.response.entries.map((e) => [e.key, e.value]),
+      );
       const mode = docs.brightnessMode === "manual" ? "manual" : "auto";
-      const level = Math.max(0.05, Math.min(1, Number(docs.brightnessLevel ?? "0.55")));
+      const level = Math.max(
+        0.05,
+        Math.min(1, Number(docs.brightnessLevel ?? "0.55")),
+      );
       await client.hardware.displaySetMode({ mode });
       if (mode === "manual") await client.hardware.displaySetLevel({ level });
     } finally {
@@ -75,6 +83,86 @@ export async function applyBridgeThingBrightness(): Promise<void> {
   } catch {
     // Not fatal — brightness just stays at current level
   }
+}
+
+// ── Enhanced Config Fallback ─────────────────────────────────────
+
+/** Load config from local device-config.json file */
+export async function tryLoadDeviceConfig(): Promise<string | null> {
+  try {
+    const response = await fetch("./device-config.json", { cache: "no-store" });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data.bridgeUrl?.trim() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Discover config URLs from various sources */
+export async function discoverConfigUrls(): Promise<string | null> {
+  // Try local config file first
+  const localConfig = await tryLoadDeviceConfig();
+  if (localConfig) return localConfig;
+
+  // Try companion app proxy endpoint
+  try {
+    const response = await fetch("http://172.16.42.1:4173/api/device-config", {
+      cache: "no-store",
+    });
+    if (response.ok) {
+      const data = await response.json();
+      return data.bridgeUrl?.trim() ?? null;
+    }
+  } catch {
+    // Ignore - continue to next fallback
+  }
+
+  // No fallback found
+  return null;
+}
+
+/** Discover bridge URL on local network */
+export async function discoverBridgeUrl(): Promise<string | null> {
+  const candidates = [
+    "ws://10.0.0.100:4173/ws",
+    "ws://192.168.1.100:4173/ws",
+    "ws://192.168.0.100:4173/ws",
+    window.location.hostname === "127.0.0.1" ||
+    window.location.hostname === "localhost"
+      ? "ws://host.docker.internal:4173/ws" // Docker case
+      : null,
+  ].filter((url): url is string => !!url);
+
+  for (const url of candidates) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 1000); // 1 second timeout
+
+      const response = await fetch(
+        url.replace("ws://", "http://") + "/api/status",
+        {
+          signal: controller.signal,
+          headers: { "Cache-Control": "no-store" },
+        },
+      );
+
+      clearTimeout(timeout);
+
+      if (response.ok) {
+        const data = await response.json();
+        // Verify it's actually our bridge
+        if (data.ok && data.player !== null) {
+          saveBridgeUrl(url); // Cache for future use
+          return url;
+        }
+      }
+    } catch {
+      // Ignore - try next candidate
+    }
+  }
+
+  return null;
 }
 
 // Synchronous URL resolution when served from the bridge server.
@@ -188,7 +276,11 @@ export class BridgeClient {
 
   private emit<T>(listeners: Set<Listener<T>>, value: T) {
     for (const fn of listeners) {
-      try { fn(value); } catch { /* ignore listener errors */ }
+      try {
+        fn(value);
+      } catch {
+        /* ignore listener errors */
+      }
     }
   }
 

@@ -1,1 +1,1 @@
-{"root":["./src/App.tsx","./src/main.tsx","./src/types.ts","./src/vite-env.d.ts","./src/lib/bridge.ts"],"version":"6.0.3"}
+{"root":["./src/App.tsx","./src/global.d.ts","./src/main.tsx","./src/types.ts","./src/vite-env.d.ts","./src/components/ErrorBoundary.tsx","./src/lib/bridge.ts"],"version":"6.0.3"}

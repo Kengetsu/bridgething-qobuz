@@ -14,6 +14,7 @@ import {
 import {
   BridgeClient,
   applyBridgeThingBrightness,
+  discoverConfigUrls,
   getSavedBridgeUrl,
   getWsUrlFromBridgeThing,
   getWsUrlFromOrigin,
@@ -34,16 +35,53 @@ function progressPct(pos: number, dur: number): number {
   return Math.min(100, (pos / dur) * 100);
 }
 
+/** Validate WebSocket URL format */
+function isValidWsUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:") {
+      return false;
+    }
+    if (!parsed.hostname) {
+      return false;
+    }
+    // Optional: validate hostname format
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ── Settings screen shown when no bridge URL is configured ──────
 function SettingsScreen({ onSave }: { onSave: (url: string) => void }) {
   const [value, setValue] = useState("ws://192.168.1.100:4173/ws");
+  const [status, setStatus] = useState<string>("");
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const url = value.trim();
-    if (url) {
+
+    // Validate URL format
+    if (!isValidWsUrl(url)) {
+      setStatus(
+        "Invalid WebSocket URL format. Must start with ws:// or wss://",
+      );
+      return;
+    }
+    setStatus("Testing connection...");
+
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 3000);
+      await fetch(url.replace("ws://", "http://") + "/api/status", {
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+
       saveBridgeUrl(url);
       onSave(url);
+    } catch (err) {
+      setStatus("Connection failed. Check IP address and port.");
     }
   };
 
@@ -51,7 +89,10 @@ function SettingsScreen({ onSave }: { onSave: (url: string) => void }) {
     <div className="status-screen">
       <WifiOff size={48} />
       <h2>Connect to Bridge</h2>
-      <p>Enter the WebSocket URL of the Qobuz bridge server running on your desktop.</p>
+      <p>
+        Enter the WebSocket URL of the Qobuz bridge server running on your
+        desktop.
+      </p>
       <form className="settings-form" onSubmit={handleSubmit}>
         <div>
           <label htmlFor="bridge-url">Bridge URL</label>
@@ -65,7 +106,22 @@ function SettingsScreen({ onSave }: { onSave: (url: string) => void }) {
             autoComplete="off"
           />
         </div>
-        <button type="submit" className="btn-primary">Connect</button>
+        {status && (
+          <p
+            className="status-message"
+            style={{
+              color:
+                status.includes("failed") || status.includes("Invalid")
+                  ? "#ff6b6b"
+                  : "#4ecdc4",
+            }}
+          >
+            {status}
+          </p>
+        )}
+        <button type="submit" className="btn-primary">
+          Connect
+        </button>
       </form>
     </div>
   );
@@ -86,12 +142,31 @@ export default function App() {
   // Resolve bridge URL on mount — strategy depends on runtime context
   useEffect(() => {
     if (isBridgeThingRuntime()) {
-      // Running as a BridgeThing package: read URL from config store
+      // Running as a BridgeThing package: try config store first, then fallback
       applyBridgeThingBrightness();
-      getWsUrlFromBridgeThing().then((url) => setWsUrl(url ?? null));
+      getWsUrlFromBridgeThing().then(async (url) => {
+        if (url) {
+          console.log("[Config] Loaded from BridgeThing:", url);
+          setWsUrl(url);
+        } else {
+          console.log(
+            "[Config] BridgeThing config not found, trying fallback...",
+          );
+          const fallback = await discoverConfigUrls();
+          if (fallback) {
+            console.log("[Config] Found via fallback:", fallback);
+            saveBridgeUrl(fallback);
+            setWsUrl(fallback);
+          } else {
+            console.log("[Config] No config found, showing settings");
+            setWsUrl(null);
+          }
+        }
+      });
     } else {
-      // Running from bridge server: WebSocket is at the same host
-      setWsUrl(getWsUrlFromOrigin() ?? getSavedBridgeUrl() ?? null);
+      const originUrl = getWsUrlFromOrigin();
+      const savedUrl = getSavedBridgeUrl();
+      setWsUrl(originUrl ?? savedUrl ?? null);
     }
   }, []);
 
@@ -110,7 +185,11 @@ export default function App() {
       }),
       client.onPlayback((pb) => {
         setPlayback(pb);
-        posRef.current = { position: pb.position, timestamp: pb.timestamp, playing: pb.status === "Playing" };
+        posRef.current = {
+          position: pb.position,
+          timestamp: pb.timestamp,
+          playing: pb.status === "Playing",
+        };
         setDisplayPos(pb.position);
       }),
     ];
@@ -135,26 +214,36 @@ export default function App() {
   }, [playback?.status]);
 
   const send = useCallback((type: string, extra?: Record<string, unknown>) => {
-    clientRef.current?.send({ type, ...extra } as Parameters<BridgeClient["send"]>[0]);
+    clientRef.current?.send({ type, ...extra } as Parameters<
+      BridgeClient["send"]
+    >[0]);
   }, []);
 
   const handleProgressClick = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
       if (!track?.duration) return;
+      if (!e.currentTarget || !e.clientX) return;
       const rect = e.currentTarget.getBoundingClientRect();
-      const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      const ratio = Math.max(
+        0,
+        Math.min(1, (e.clientX - rect.left) / rect.width),
+      );
       send("seek", { position: ratio * track.duration });
     },
-    [track?.duration, send]
+    [track?.duration, send],
   );
 
   const handleVolumeClick = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
+      if (!e.currentTarget || !e.clientX) return;
       const rect = e.currentTarget.getBoundingClientRect();
-      const value = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      const value = Math.max(
+        0,
+        Math.min(1, (e.clientX - rect.left) / rect.width),
+      );
       send("volume", { value });
     },
-    [send]
+    [send],
   );
 
   // ── No URL configured ───────────────────────────────────────
@@ -164,7 +253,10 @@ export default function App() {
         <div className="status-screen">
           <WifiOff size={48} />
           <h2>Not configured</h2>
-          <p>Open the BridgeThing companion app and set the Bridge URL in Qobuz settings.</p>
+          <p>
+            Open the BridgeThing companion app and set the Bridge URL in Qobuz
+            settings.
+          </p>
         </div>
       );
     }
@@ -181,7 +273,10 @@ export default function App() {
         <button
           className="btn-primary"
           style={{ marginTop: 8 }}
-          onClick={() => { saveBridgeUrl(""); setWsUrl(null); }}
+          onClick={() => {
+            saveBridgeUrl("");
+            setWsUrl(null);
+          }}
         >
           Change URL
         </button>
@@ -234,10 +329,16 @@ export default function App() {
       {/* Info + controls */}
       <div className="info-panel">
         <div className="track-info">
-          <div className="track-title" title={track.title}>{track.title}</div>
-          <div className="track-artist" title={track.artist}>{track.artist}</div>
+          <div className="track-title" title={track.title}>
+            {track.title}
+          </div>
+          <div className="track-artist" title={track.artist}>
+            {track.artist}
+          </div>
           {track.album && (
-            <div className="track-album" title={track.album}>{track.album}</div>
+            <div className="track-album" title={track.album}>
+              {track.album}
+            </div>
           )}
         </div>
 
@@ -282,7 +383,11 @@ export default function App() {
             onClick={() => send("playpause")}
             aria-label={isPlaying ? "Pause" : "Play"}
           >
-            {isPlaying ? <Pause size={26} fill="currentColor" /> : <Play size={26} fill="currentColor" />}
+            {isPlaying ? (
+              <Pause size={26} fill="currentColor" />
+            ) : (
+              <Play size={26} fill="currentColor" />
+            )}
           </button>
 
           <button

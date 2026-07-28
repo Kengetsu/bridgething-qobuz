@@ -15,7 +15,8 @@
         "pattern": "^wss?://.+",
         "minLength": 8,
         "maxLength": 256,
-        "default": null
+        "default": null,
+        "hint": "Auto-discovery available. If empty, app will attempt to find your bridge server."
       }
     }
   ],
