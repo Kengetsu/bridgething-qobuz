@@ -266,9 +266,16 @@ bridgething/
 
 ## Known Limitations and Open Questions
 
-- **Hardware buttons** — The Car Thing has a rotary knob, five preset buttons, and a back button. These are not wired up in Phase 1. They would require subscribing to BridgeThing's `hardware` SDK events and mapping to MPRIS commands.
-- **Album art over file://** — When the app is deployed as a BridgeThing package, artwork URLs (HTTPS CDN links from Qobuz) need to be reachable from the Car Thing's network. If the Car Thing has no internet access, art will not load.
-- **Multi-player disambiguation** — If multiple MPRIS players are active simultaneously, the server follows the first discovered or the explicitly configured `PLAYER` name. A future UI affordance could let the user switch players.
+- **Hardware buttons** — The Car Thing has a rotary knob, five preset buttons, and a back button. These are not wired up in Phase 1. They would require subscribing to BridgeThing's `hardware` SDK events and mapping to MPRIS commands. See Phase 2 for rate limiting and security concerns when implementing.
+
+- **Album art over file://** — When the app is deployed as a BridgeThing package, artwork URLs (HTTPS CDN links from Qobuz) need to be reachable from the Car Thing's network. If the Car Thing has no internet access, art will not load. See Phase 2 for network permission troubleshooting steps.
+
+- **Multi-player disambiguation** — If multiple MPRIS players are active simultaneously, the server follows the first discovered or the explicitly configured `PLAYER` name. A future UI affordance could let the user switch players. **IMPORTANT:** Automatic player switching is now documented as a critical feature for Phase 2 - see "Feature Request: Automatic MPRIS Player Switching" in phase-2.md.
+
 - **Bun availability** — The bridge server requires Bun. The tooling assumes Bun is installed on the user's desktop (`curl -fsSL https://bun.sh/install | bash`).
+
 - **dbus-next Bun compatibility** — `dbus-next` is pure JavaScript and expected to work under Bun. This has not been integration-tested in a live D-Bus session within this development environment.
+
 - **Qobuz Connect mode** — If the user wants to cast music from the Qobuz mobile app to the desktop (rather than using QBZ directly), they would need `qbzd` running as a Connect receiver. `qbzd watch` could replace or supplement the MPRIS interface in a future phase.
+
+- **WebSocket connection issues** — The BridgeThing app may fail to connect to the WebSocket endpoint even when config is set. This is documented in Phase 2 with diagnostic steps and potential fixes for config fallback chain implementation.
