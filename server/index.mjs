@@ -324,10 +324,24 @@ const server = serve({
   hostname: "0.0.0.0",
 
   fetch(req, srv) {
-    const { pathname } = new URL(req.url);
+    const url = new URL(req.url);
+    const { pathname } = url;
+
+    // Handle pre-flight and add CORS for all responses
+    const corsHeaders = {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Headers": "Content-Type",
+    };
+
+    if (req.method === "OPTIONS") {
+      return new Response(null, { status: 204, headers: corsHeaders });
+    }
 
     if (pathname === "/ws") {
-      if (srv.upgrade(req)) return;
+      const origin = req.headers.get("origin") ?? "unknown";
+      console.log(`  WebSocket upgrade request from ${origin} (${req.headers.get("host")})`);
+      if (srv.upgrade(req, { headers: corsHeaders })) return;
+      console.error("  WebSocket upgrade failed — not a valid upgrade request");
       return new Response("WebSocket upgrade failed", { status: 400 });
     }
 
@@ -338,7 +352,7 @@ const server = serve({
         clients: clients.size,
         track: state.track?.title ?? null,
         status: state.playback.status,
-      });
+      }, { headers: corsHeaders });
     }
 
     return serveStatic(pathname);
@@ -347,13 +361,16 @@ const server = serve({
   websocket: {
     open(ws) {
       clients.add(ws);
+      const addr = ws.remoteAddress ?? "unknown";
+      console.log(`  CarThing connected (${addr}) — ${clients.size} client(s)`);
       ws.send(JSON.stringify({ type: "hello", state }));
     },
     message(ws, data) {
       handleCommand(String(data));
     },
-    close(ws) {
+    close(ws, code) {
       clients.delete(ws);
+      console.log(`  CarThing disconnected (code ${code}) — ${clients.size} client(s) remaining`);
     },
   },
 });
