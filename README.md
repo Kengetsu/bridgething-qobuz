@@ -29,32 +29,34 @@ npm install
 
 ## Running
 
-### 1. Find your QBZ player name
-
-```sh
-playerctl --list-all
-# Look for something like "qbz" or "com.blitzfc.qbz"
-```
-
-### 2. Build the app
+### 1. Build the app
 
 ```sh
 npm run build
 ```
 
-### 3. Start the bridge server
+### 2. Start the bridge server
 
 ```sh
-# Auto-detect the active MPRIS player:
 bun server/index.mjs
+```
 
-# Or target QBZ specifically:
+The server connects to D-Bus and auto-discovers whichever MPRIS player is active. Start QBZ and begin playing something, then check `http://localhost:4173/api/status` to confirm the player was detected.
+
+If you have multiple MPRIS players running and want to lock to QBZ specifically, find its D-Bus service name first:
+
+```sh
+busctl --user list | grep mpris
+# e.g. org.mpris.MediaPlayer2.qbz → use PLAYER=qbz
+```
+
+Then pass it as an environment variable:
+
+```sh
 PLAYER=qbz bun server/index.mjs
 ```
 
-The server starts at `http://0.0.0.0:4173`. Open `http://localhost:4173/api/status` to confirm it's running.
-
-### 4. Connect the Car Thing
+### 3. Connect the Car Thing
 
 Point the Car Thing's Chromium to `http://<your-desktop-ip>:4173`.
 
