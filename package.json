@@ -13,6 +13,7 @@
   "dependencies": {
     "@bridgething/client": "^0.4.0",
     "@vitejs/plugin-react": "latest",
+    "dbus-next": "^0.10.2",
     "lucide-react": "latest",
     "react": "latest",
     "react-dom": "latest"

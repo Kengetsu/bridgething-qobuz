@@ -1,43 +1,30 @@
 #!/usr/bin/env bun
 // Qobuz CarThing bridge server
-// Polls MPRIS via playerctl and streams state to the CarThing over WebSocket.
-// Control commands from the CarThing are executed via playerctl.
+// Connects to the D-Bus session bus and subscribes to MPRIS signals directly —
+// no polling, no subprocess spawning. Streams playback state to the CarThing
+// over WebSocket and translates control commands back to MPRIS method calls.
 //
 // Usage:
 //   bun server/index.mjs
 //   PORT=4173 PLAYER=qbz bun server/index.mjs
 //
-// PLAYER env var: playerctl -p <name> — set to your QBZ/qbzd player name.
-// Leave empty to use the currently active MPRIS player.
-// Run `playerctl --list-all` to see available player names.
+// PLAYER env var: target a specific MPRIS player by short name (e.g. "qbz").
+// Leave empty to follow the most recently active player automatically.
 
 import { serve } from "bun";
 import { join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
+import dbus from "dbus-next";
 
 const PORT = parseInt(process.env.PORT ?? "4173");
-const PLAYER = process.env.PLAYER ?? "";
+const PLAYER = process.env.PLAYER ?? ""; // e.g. "qbz" → org.mpris.MediaPlayer2.qbz
 const DIST = join(import.meta.dirname, "..", "dist");
 
-// Separator used inside playerctl --format to split fields.
-// Chosen to be extremely unlikely to appear in music metadata.
-const SEP = "\x1d"; // ASCII Group Separator
-
-// ── MPRIS helpers ───────────────────────────────────────────────
-
-function pc(args) {
-  const cmd = ["playerctl"];
-  if (PLAYER) cmd.push("-p", PLAYER);
-  cmd.push(...args);
-  return cmd;
-}
-
-function run(args) {
-  const proc = Bun.spawnSync(pc(args), { stdout: "pipe", stderr: "pipe" });
-  if (proc.exitCode !== 0) return null;
-  const out = new TextDecoder().decode(proc.stdout).trim();
-  return out || null;
-}
+const MPRIS_PREFIX = "org.mpris.MediaPlayer2.";
+const MPRIS_PATH   = "/org/mpris/MediaPlayer2";
+const PLAYER_IFACE = "org.mpris.MediaPlayer2.Player";
+const PROPS_IFACE  = "org.freedesktop.DBus.Properties";
+const DBUS_IFACE   = "org.freedesktop.DBus";
 
 // ── State ────────────────────────────────────────────────────────
 
@@ -54,123 +41,245 @@ function mkPlayback(overrides = {}) {
 }
 
 let state = {
-  playerName: PLAYER || null,
+  playerName: null,
   track: null,
   playback: mkPlayback(),
 };
+
+// ── WebSocket clients ────────────────────────────────────────────
 
 const clients = new Set();
 
 function broadcast(msg) {
   const str = JSON.stringify(msg);
   for (const ws of clients) {
-    try { ws.send(str); } catch { /* client may have closed */ }
+    try { ws.send(str); } catch { /* ignore closed sockets */ }
   }
 }
 
-// ── Poll MPRIS ───────────────────────────────────────────────────
+// ── MPRIS value helpers ──────────────────────────────────────────
 
-let prevTrackKey = "";
+function variantValue(v) {
+  // dbus-next wraps values in Variant objects; unwrap recursively
+  if (v === null || v === undefined) return undefined;
+  if (typeof v === "object" && "value" in v) return variantValue(v.value);
+  if (Array.isArray(v)) return v.map(variantValue);
+  if (typeof v === "object") {
+    return Object.fromEntries(Object.entries(v).map(([k, val]) => [k, variantValue(val)]));
+  }
+  return v;
+}
 
-async function pollOnce() {
-  const status = run(["status"]);
+function mprisStatusToStatus(s) {
+  if (s === "Playing") return "Playing";
+  if (s === "Paused")  return "Paused";
+  return "Stopped";
+}
 
-  if (!status) {
-    if (state.playback.status !== "Stopped") {
-      state.playback = mkPlayback();
-      state.track = null;
-      broadcast({ type: "playback", playback: state.playback });
-      broadcast({ type: "track", track: null });
-    }
+function mprisLoopToLoop(s) {
+  if (s === "Track")    return "Track";
+  if (s === "Playlist") return "Playlist";
+  return "None";
+}
+
+function metadataToTrack(meta) {
+  if (!meta) return null;
+  const title    = variantValue(meta["xesam:title"])  ?? "";
+  const artistRaw= variantValue(meta["xesam:artist"]) ?? "";
+  const artist   = Array.isArray(artistRaw) ? artistRaw.join(", ") : String(artistRaw);
+  const album    = variantValue(meta["xesam:album"])  ?? "";
+  const artUrl   = variantValue(meta["mpris:artUrl"]) || undefined;
+  const lengthUs = variantValue(meta["mpris:length"]) ?? 0;
+  const duration = Number(lengthUs) / 1_000_000;
+  if (!title && !artist) return null;
+  return { title, artist, album, artUrl, duration };
+}
+
+// ── Active player management ─────────────────────────────────────
+
+let bus = null;
+let playerProxy = null; // org.mpris.MediaPlayer2.Player interface
+let propsProxy  = null; // org.freedesktop.DBus.Properties interface
+let activeName  = null; // full D-Bus name e.g. org.mpris.MediaPlayer2.qbz
+
+async function connectToPlayer(serviceName) {
+  if (activeName === serviceName) return;
+
+  // Tear down previous connection
+  if (playerProxy) {
+    try { playerProxy.removeAllListeners(); } catch {}
+    playerProxy = null;
+  }
+  if (propsProxy) {
+    try { propsProxy.removeAllListeners(); } catch {}
+    propsProxy = null;
+  }
+
+  activeName = serviceName;
+  const shortName = serviceName.replace(MPRIS_PREFIX, "");
+  state.playerName = shortName;
+
+  if (!serviceName) {
+    state.track = null;
+    state.playback = mkPlayback();
+    broadcast({ type: "hello", state });
     return;
   }
 
-  const normalStatus = status === "Playing" ? "Playing" : status === "Paused" ? "Paused" : "Stopped";
+  try {
+    const obj = await bus.getProxyObject(serviceName, MPRIS_PATH);
+    playerProxy = obj.getInterface(PLAYER_IFACE);
+    propsProxy  = obj.getInterface(PROPS_IFACE);
 
-  // Position (seconds, float)
-  const posStr = run(["position"]);
-  const position = posStr ? parseFloat(posStr) : state.playback.position;
+    // ── Read initial state ────────────────────────────────────
+    const allProps = variantValue(await propsProxy.GetAll(PLAYER_IFACE));
 
-  // Volume (0–1)
-  const volStr = run(["volume"]);
-  const volume = volStr != null ? parseFloat(volStr) : state.playback.volume;
+    const track    = metadataToTrack(allProps.Metadata);
+    const status   = mprisStatusToStatus(allProps.PlaybackStatus);
+    const posUs    = Number(allProps.Position ?? 0);
+    const position = posUs / 1_000_000;
+    const volume   = Number(allProps.Volume ?? 1);
+    const shuffle  = Boolean(allProps.Shuffle);
+    const loop     = mprisLoopToLoop(allProps.LoopStatus);
 
-  // All metadata in one invocation
-  const metaFmt = `{{title}}${SEP}{{artist}}${SEP}{{album}}${SEP}{{mpris:artUrl}}${SEP}{{mpris:length}}`;
-  const metaStr = run(["metadata", "--format", metaFmt]);
+    state.track   = track;
+    state.playback = mkPlayback({ status, position, volume, shuffle, loop });
+    broadcast({ type: "hello", state });
 
-  if (metaStr) {
-    const parts = metaStr.split(SEP);
-    const title    = (parts[0] ?? "").trim();
-    const artist   = (parts[1] ?? "").trim();
-    const album    = (parts[2] ?? "").trim();
-    const artUrl   = (parts[3] ?? "").trim() || undefined;
-    const lenMicro = parseInt(parts[4] ?? "0") || 0;
-    const duration = lenMicro / 1_000_000;
+    // ── Subscribe: property changes (metadata, status, volume, shuffle, loop) ─
+    propsProxy.on("PropertiesChanged", (iface, changed) => {
+      if (iface !== PLAYER_IFACE) return;
+      const c = variantValue(changed);
 
-    const trackKey = `${title}|${artist}|${album}`;
-    if (trackKey !== prevTrackKey) {
-      prevTrackKey = trackKey;
-      state.track = { title, artist, album, artUrl, duration };
-      broadcast({ type: "track", track: state.track });
-    } else if (artUrl !== state.track?.artUrl) {
-      // Art URL can lag behind — update it when it arrives
-      state.track = { ...state.track, artUrl };
-      broadcast({ type: "track", track: state.track });
-    }
-  }
+      let trackDirty    = false;
+      let playbackDirty = false;
 
-  const newPlayback = {
-    status: normalStatus,
-    position,
-    volume,
-    shuffle: false,
-    loop: "None",
-    timestamp: Date.now(),
-  };
+      if ("Metadata" in c) {
+        const t = metadataToTrack(c.Metadata);
+        if (JSON.stringify(t) !== JSON.stringify(state.track)) {
+          state.track = t;
+          trackDirty = true;
+        }
+      }
+      if ("PlaybackStatus" in c) {
+        const s = mprisStatusToStatus(c.PlaybackStatus);
+        if (s !== state.playback.status) {
+          state.playback = { ...state.playback, status: s, timestamp: Date.now() };
+          playbackDirty = true;
+        }
+      }
+      if ("Volume" in c) {
+        const v = Number(c.Volume);
+        if (Math.abs(v - state.playback.volume) > 0.01) {
+          state.playback = { ...state.playback, volume: v };
+          playbackDirty = true;
+        }
+      }
+      if ("Shuffle" in c) {
+        state.playback = { ...state.playback, shuffle: Boolean(c.Shuffle) };
+        playbackDirty = true;
+      }
+      if ("LoopStatus" in c) {
+        state.playback = { ...state.playback, loop: mprisLoopToLoop(c.LoopStatus) };
+        playbackDirty = true;
+      }
 
-  const statusChanged = state.playback.status !== normalStatus;
-  const posJumped = Math.abs(state.playback.position - position) > 2;
-  const volChanged = Math.abs(state.playback.volume - volume) > 0.02;
+      if (trackDirty)    broadcast({ type: "track",    track:    state.track });
+      if (playbackDirty) broadcast({ type: "playback", playback: state.playback });
+    });
 
-  if (statusChanged || posJumped || volChanged) {
-    state.playback = newPlayback;
-    broadcast({ type: "playback", playback: newPlayback });
-  } else if (normalStatus === "Playing") {
-    // Update timestamp so clients can interpolate smoothly
-    state.playback = newPlayback;
-    broadcast({ type: "playback", playback: newPlayback });
+    // ── Subscribe: seek events (gives exact new position) ────
+    playerProxy.on("Seeked", (positionUs) => {
+      const position = Number(positionUs) / 1_000_000;
+      state.playback = { ...state.playback, position, timestamp: Date.now() };
+      broadcast({ type: "playback", playback: state.playback });
+    });
+
+    console.log(`  Connected to player: ${shortName}`);
+  } catch (err) {
+    console.error(`  Failed to connect to ${serviceName}:`, err.message);
+    activeName = null;
   }
 }
 
-// ── Control commands ─────────────────────────────────────────────
+// ── Player discovery ─────────────────────────────────────────────
 
-function handleCommand(raw) {
+async function listMprisPlayers() {
+  const dbusObj  = await bus.getProxyObject(DBUS_IFACE, "/org/freedesktop/DBus");
+  const dbusIface = dbusObj.getInterface(DBUS_IFACE);
+  const names    = await dbusIface.ListNames();
+  return names.filter((n) => n.startsWith(MPRIS_PREFIX));
+}
+
+async function pickPlayer(names) {
+  if (!names.length) return null;
+  if (PLAYER) {
+    const target = `${MPRIS_PREFIX}${PLAYER}`;
+    return names.find((n) => n === target) ?? names[0];
+  }
+  return names[0];
+}
+
+async function refreshPlayerList() {
+  const players = await listMprisPlayers();
+  const chosen  = await pickPlayer(players);
+  if (chosen && chosen !== activeName) {
+    await connectToPlayer(chosen);
+  } else if (!chosen && activeName) {
+    await connectToPlayer(null);
+  }
+}
+
+// ── D-Bus control commands ───────────────────────────────────────
+
+async function callPlayer(method, ...args) {
+  if (!playerProxy) return;
+  try {
+    await playerProxy[method](...args);
+  } catch (err) {
+    console.error(`  D-Bus call ${method} failed:`, err.message);
+  }
+}
+
+async function setProperty(prop, variant) {
+  if (!propsProxy) return;
+  try {
+    await propsProxy.Set(PLAYER_IFACE, prop, variant);
+  } catch (err) {
+    console.error(`  D-Bus Set ${prop} failed:`, err.message);
+  }
+}
+
+async function handleCommand(raw) {
   let msg;
   try { msg = JSON.parse(raw); } catch { return; }
 
   switch (msg.type) {
-    case "playpause": run(["play-pause"]); break;
-    case "play":      run(["play"]);       break;
-    case "pause":     run(["pause"]);      break;
-    case "next":      run(["next"]);       break;
-    case "previous":  run(["previous"]);   break;
+    case "playpause": await callPlayer("PlayPause"); break;
+    case "play":      await callPlayer("Play");      break;
+    case "pause":     await callPlayer("Pause");     break;
+    case "next":      await callPlayer("Next");      break;
+    case "previous":  await callPlayer("Previous");  break;
     case "seek": {
-      const pos = parseFloat(msg.position);
-      if (Number.isFinite(pos)) run(["position", String(pos)]);
+      // MPRIS SetPosition takes (TrackId, PositionUs)
+      const posUs = Math.round(parseFloat(msg.position) * 1_000_000);
+      const trackId = variantValue(
+        (await propsProxy?.Get(PLAYER_IFACE, "Metadata").catch(() => null))?.["mpris:trackid"]
+      ) ?? "/org/mpris/MediaPlayer2/TrackList/NoTrack";
+      await callPlayer("SetPosition", trackId, posUs);
+      // Update local state; Seeked signal will also fire
+      state.playback = { ...state.playback, position: parseFloat(msg.position), timestamp: Date.now() };
+      broadcast({ type: "playback", playback: state.playback });
       break;
     }
     case "volume": {
       const vol = Math.max(0, Math.min(1, parseFloat(msg.value)));
-      if (Number.isFinite(vol)) run(["volume", String(vol.toFixed(4))]);
+      await setProperty("Volume", new dbus.Variant("d", vol));
+      state.playback = { ...state.playback, volume: vol };
+      broadcast({ type: "playback", playback: state.playback });
       break;
     }
-    default:
-      return;
   }
-
-  // Immediate poll so the new state reaches the client quickly
-  setTimeout(pollOnce, 80);
 }
 
 // ── Static file serving ──────────────────────────────────────────
@@ -178,31 +287,26 @@ function handleCommand(raw) {
 const MIME = {
   html: "text/html; charset=utf-8",
   js:   "application/javascript",
-  mjs:  "application/javascript",
   css:  "text/css",
   json: "application/json",
   png:  "image/png",
-  jpg:  "image/jpeg",
-  jpeg: "image/jpeg",
+  jpg:  "image/jpeg", jpeg: "image/jpeg",
   svg:  "image/svg+xml",
   ico:  "image/x-icon",
-  woff2:"font/woff2",
-  woff: "font/woff",
+  woff2:"font/woff2", woff: "font/woff",
 };
 
 function serveStatic(pathname) {
-  const rel = pathname === "/" ? "index.html" : pathname.replace(/^\//, "");
+  const rel      = pathname === "/" ? "index.html" : pathname.replace(/^\//, "");
   const filePath = join(DIST, rel);
 
   if (existsSync(filePath)) {
     const ext = rel.split(".").pop() ?? "";
-    const contentType = MIME[ext] ?? "application/octet-stream";
     return new Response(readFileSync(filePath), {
-      headers: { "Content-Type": contentType, "Cache-Control": "no-store" },
+      headers: { "Content-Type": MIME[ext] ?? "application/octet-stream", "Cache-Control": "no-store" },
     });
   }
 
-  // SPA fallback
   const index = join(DIST, "index.html");
   if (existsSync(index)) {
     return new Response(readFileSync(index), {
@@ -210,10 +314,7 @@ function serveStatic(pathname) {
     });
   }
 
-  return new Response("Not found — run `bun run build` first", {
-    status: 404,
-    headers: { "Content-Type": "text/plain" },
-  });
+  return new Response("Not found — run `npm run build` first", { status: 404 });
 }
 
 // ── HTTP + WebSocket server ──────────────────────────────────────
@@ -222,19 +323,19 @@ const server = serve({
   port: PORT,
   hostname: "0.0.0.0",
 
-  fetch(req, server) {
+  fetch(req, srv) {
     const { pathname } = new URL(req.url);
 
     if (pathname === "/ws") {
-      if (server.upgrade(req)) return;
+      if (srv.upgrade(req)) return;
       return new Response("WebSocket upgrade failed", { status: 400 });
     }
 
     if (pathname === "/api/status") {
       return Response.json({
         ok: true,
-        player: PLAYER || "auto",
-        connected: clients.size,
+        player: activeName?.replace(MPRIS_PREFIX, "") ?? null,
+        clients: clients.size,
         track: state.track?.title ?? null,
         status: state.playback.status,
       });
@@ -257,18 +358,37 @@ const server = serve({
   },
 });
 
-// ── Poll loop ────────────────────────────────────────────────────
+// ── Start ────────────────────────────────────────────────────────
 
-async function loop() {
-  await pollOnce();
-  // Poll faster while playing so progress stays accurate
-  const delay = state.playback.status === "Playing" ? 500 : 2000;
-  setTimeout(loop, delay);
-}
+bus = dbus.sessionBus();
 
-loop();
+bus.on("error", (err) => {
+  console.error("D-Bus error:", err.message);
+});
 
-// ── Startup message ──────────────────────────────────────────────
+// Watch for MPRIS players appearing and disappearing
+const dbusObj   = await bus.getProxyObject(DBUS_IFACE, "/org/freedesktop/DBus");
+const dbusIface = dbusObj.getInterface(DBUS_IFACE);
+
+dbusIface.on("NameOwnerChanged", async (name, oldOwner, newOwner) => {
+  if (!name.startsWith(MPRIS_PREFIX)) return;
+
+  if (newOwner && !oldOwner) {
+    // New player appeared
+    if (!activeName || (PLAYER && name === `${MPRIS_PREFIX}${PLAYER}`)) {
+      await connectToPlayer(name);
+    }
+  } else if (!newOwner && oldOwner) {
+    // Player disappeared
+    if (name === activeName) {
+      console.log(`  Player left: ${name.replace(MPRIS_PREFIX, "")}`);
+      await refreshPlayerList();
+    }
+  }
+});
+
+// Initial player discovery
+await refreshPlayerList();
 
 console.log(`
   Qobuz CarThing Bridge
@@ -276,11 +396,8 @@ console.log(`
   App       →  http://localhost:${PORT}
   WebSocket →  ws://localhost:${PORT}/ws
   Status    →  http://localhost:${PORT}/api/status
-  Player    →  ${PLAYER || "(auto-detect active MPRIS player)"}
+  Player    →  ${PLAYER || "(auto — follows active MPRIS player)"}
 
-  Point your CarThing Chromium at:
+  Point the CarThing Chromium at:
     http://<this-machine-ip>:${PORT}
-
-  Tip: run \`playerctl --list-all\` to see MPRIS player names,
-       then set PLAYER=<name> if you want to target QBZ specifically.
 `);
